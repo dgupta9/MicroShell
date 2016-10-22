@@ -6,7 +6,7 @@
 #
 
 CC_C= gcc
-CFLAGS = -Wall -g -Werror
+CFLAGS = -g #-Wall -g -Werror
 
 TARGETS= ush
 DEPS = parse.h
@@ -17,7 +17,7 @@ $(TARGETS): $(OBJ) $(DEPS)
 	rm -f *.o
 
 %.o: %.c $(DEPS)
-	$(CC_C) -c  $^ $(CFLAGS)
+	$(CC_C) -c  $< $(CFLAGS)
 
 
 .PHONY: clean
