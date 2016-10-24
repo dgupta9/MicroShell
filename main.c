@@ -28,7 +28,8 @@
 
 char *cwd;
 
-int tempInputPipefd=-1;
+int pipefd[2];
+int usePipeInput=0;
 
 static int handleBuiltIn(char *cmd[]){
     if(!strcmp(cmd[0],"cd")){
@@ -47,6 +48,106 @@ static int handleBuiltIn(char *cmd[]){
     return 0;
 }
 
+static void prCmd(Cmd c){
+    if(!strcmp(c->args[0],"end"))
+        exit(0);
+    
+    int outputfd,inputfd,savedstdout,savedstdin,savedstderr;
+    
+    if((c->out==Tpipe)||(c->out==TpipeErr)){
+        pipe(pipefd);
+    }
+    pid_t childPid = fork();
+    if(childPid<0){
+        perror("Shell error in fork");
+        exit(-1);
+    }else if(childPid == 0){
+        //child process
+        
+        //handle INPUT Redirection
+        if ( c->in == Tin ){
+            inputfd = open(c->infile,O_RDONLY);
+            if(inputfd<=0){
+                perror("INPUT FILE ERROR");
+                exit(-1);
+            }
+            savedstdin = dup(0);
+            dup2(inputfd,0);
+        }
+        
+        if(usePipeInput){
+            close(pipefd[1]);
+            dup2(pipefd[0],0);
+        }
+        
+        // handle OUTPUT Redirection
+        if ( c->out != Tnil )
+            switch ( c->out ) {
+                case Tout:
+                    //redirect output to file
+                    outputfd = open(c->outfile,O_WRONLY|O_CREAT,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+                    if(outputfd<=0){
+                        perror("OUTPUT IN FILE");
+                    }
+                    savedstdout = dup(1);
+                    dup2(outputfd,1);
+                    break;
+                case Tapp:
+                    outputfd = open(c->outfile,O_WRONLY|O_CREAT|O_APPEND,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+                    if(outputfd<=0){
+                        perror("OUTPUT IN FILE");
+                    }
+                    savedstdout = dup(1);
+                    dup2(outputfd,1);
+                    break;
+                case ToutErr:
+                    outputfd = open(c->outfile,O_WRONLY|O_CREAT,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+                    if(outputfd<=0){
+                        perror("OUTPUT IN FILE");
+                    }
+                    savedstdout = dup(1);
+                    savedstderr = dup(2);
+                    dup2(outputfd,1);
+                    dup2(outputfd,2);
+                    break;
+                case TappErr:
+                     outputfd = open(c->outfile,O_WRONLY|O_CREAT|O_APPEND,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+                    if(outputfd<=0){
+                        perror("OUTPUT IN FILE");
+                    }
+                    savedstdout = dup(1);
+                    savedstderr = dup(2);
+                    dup2(outputfd,1);
+                    dup2(outputfd,2);
+                    break;
+                case Tpipe:
+                    close(pipefd[0]);
+                    dup2(pipefd[1],1);
+                    break;
+                case TpipeErr:
+                    close(pipefd[0]);
+                    dup2(pipefd[1],1);
+                    dup2(pipefd[1],2);
+                    break;
+                default:
+                    fprintf(stderr, "Shouldn't get here\n");
+                    exit(-1);
+            }
+        
+            if(execvp(c->args[0],c->args)==-1){
+                printf("Error in running command");
+                exit(-1);
+            }
+        
+    }else{
+        //parent shell process
+        if((c->out==Tpipe)||(c->out==TpipeErr)){
+            usePipeInput=1;
+        }
+        
+    }
+}
+/*
 static void prCmd_wasted(Cmd c){
     if(!strcmp(c->args[0],"end"))
         exit(0);
@@ -192,7 +293,7 @@ static void prCmd_wasted(Cmd c){
         }
     }
 }
-
+*/
 static void prCmd_2(Cmd c)
 {
   int i;
