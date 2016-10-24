@@ -28,6 +28,8 @@
 
 char *cwd;
 
+int tempInputPipefd=-1;
+
 static int handleBuiltIn(char *cmd[]){
     if(!strcmp(cmd[0],"cd")){
         //handle cd command
@@ -39,14 +41,25 @@ static int handleBuiltIn(char *cmd[]){
             exit(-1);
         }
          return 1;  
+    }else if(!strcmp(cmd[0],"cd")){
+        
     }
     return 0;
 }
 
-static void prCmd(Cmd c){
+static void prCmd_wasted(Cmd c){
     if(!strcmp(c->args[0],"end"))
         exit(0);
     int outputfd,inputfd,savedstdout,savedstdin,savedstderr;
+    if ( c->in == Tin ){
+        inputfd = open(c->infile,O_RDONLY);
+        if(inputfd<=0){
+            perror("INPUT FILE ERROR");
+            exit(-1);
+        }
+        savedstdin = dup(0);
+        dup2(inputfd,0);
+    }
     if ( c->out != Tnil )
     switch ( c->out ) {
         case Tout:
@@ -86,12 +99,6 @@ static void prCmd(Cmd c){
             dup2(outputfd,1);
             dup2(outputfd,2);
             break;
-        case Tpipe:
-           printf("| ");
-           break;
-        case TpipeErr:
-            printf("|& ");
-            break;
         default:
             fprintf(stderr, "Shouldn't get here\n");
             exit(-1);
@@ -112,6 +119,23 @@ static void prCmd(Cmd c){
         }else if(childPid == 0){
             //child process
             
+            //handle pipes before execvp
+            if((c->out==Tpipe)||(c->out==TpipeErr)){
+                int pipe_fd[2]; // pipe b/w 2 commands
+                if(pipe(pipe_fd)<0){
+                    perror("Error in Pipe");
+                    exit(-1);
+                }
+                // close input side of pipe
+                close(pipe_fd[0]);
+                dup2(pipe_fd[1],1);
+                if(c->out==TpipeErr)
+                    dup2(pipe_fd[1],2);
+                if(tempInputPipefd != -1){
+                    // previous command has some created pipe
+                }
+            }
+            
             if(execvp(c->args[0],c->args)==-1){
                 printf("Error in running command");
                 exit(-1);
@@ -121,6 +145,23 @@ static void prCmd(Cmd c){
             
             // revert back the descriptor for parent class
             // first parent will always be shell
+            
+            if ( c->in == Tin ){
+                dup2(savedstdin,0);
+                close(inputfd);
+                close(savedstdin);
+                savedstdin = dup(0);
+                dup2(inputfd,0);
+            }
+            
+             if((c->out==Tpipe)||(c->out==TpipeErr)){
+                // close input side of pipe
+                close(pipe_fd[0]);
+                dup2(pipe_fd[1],1);
+                if(c->out==TpipeErr) 
+                    dup2(pipe_fd[1],2);
+            }
+            
             if ( c->out != Tnil )
             switch ( c->out ) {
                 case Tout:
@@ -148,8 +189,6 @@ static void prCmd(Cmd c){
                     fprintf(stderr, "Shouldn't get here\n");
                     exit(-1);
             }
-            
-            wait(&status);
         }
     }
 }
