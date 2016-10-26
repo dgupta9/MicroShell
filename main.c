@@ -29,7 +29,10 @@
 char *cwd;
 
 int pipefd[2];
+int pipefd2[2];
 int usePipeInput=0;
+int usePipe2=0;
+int usePipeInput2=0;
 
 static int handleBuiltIn(char *cmd[]){
     if(!strcmp(cmd[0],"cd")){
@@ -48,14 +51,18 @@ static int handleBuiltIn(char *cmd[]){
     return 0;
 }
 
-static void prCmd(Cmd c){
+static void prCmd(Cmd c,Cmd nextCmd){
     if(!strcmp(c->args[0],"end"))
         exit(0);
     
     int outputfd,inputfd,savedstdout,savedstdin,savedstderr;
     
     if((c->out==Tpipe)||(c->out==TpipeErr)){
-        pipe(pipefd);
+        if(!usePipe2){
+            pipe(pipefd);
+        }else{
+            pipe(pipefd2);
+        }
     }
     pid_t childPid = fork();
     if(childPid<0){
@@ -78,7 +85,14 @@ static void prCmd(Cmd c){
         if(usePipeInput){
             close(pipefd[1]);
             dup2(pipefd[0],0);
+            usePipeInput=0;
         }
+        if(usePipeInput2){
+                close(pipefd2[1]);
+                dup2(pipefd2[0],0);
+                usePipeInput2=0;
+         }
+         
         
         // handle OUTPUT Redirection
         if ( c->out != Tnil )
@@ -121,13 +135,24 @@ static void prCmd(Cmd c){
                     dup2(outputfd,2);
                     break;
                 case Tpipe:
-                    close(pipefd[0]);
-                    dup2(pipefd[1],1);
+                    if(!usePipe2){
+                        close(pipefd[0]);
+                        dup2(pipefd[1],1);
+                    }else{
+                        close(pipefd2[0]);
+                        dup2(pipefd2[1],1);
+                    }
                     break;
                 case TpipeErr:
-                    close(pipefd[0]);
-                    dup2(pipefd[1],1);
-                    dup2(pipefd[1],2);
+                    if(!usePipe2){
+                        close(pipefd[0]);
+                        dup2(pipefd[1],1);
+                        dup2(pipefd[1],2);
+                    }else{
+                        close(pipefd2[0]);
+                        dup2(pipefd2[1],1);
+                        dup2(pipefd2[1],2);
+                    }
                     break;
                 default:
                     fprintf(stderr, "Shouldn't get here\n");
@@ -142,7 +167,18 @@ static void prCmd(Cmd c){
     }else{
         //parent shell process
         if((c->out==Tpipe)||(c->out==TpipeErr)){
-            usePipeInput=1;
+            if((nextCmd!= NULL)&&((nextCmd->out==Tpipe)||(nextCmd->out==TpipeErr))){
+               usePipe2=1; 
+               usePipeInput=1;
+            }else{
+                if(usePipe2){
+                   usePipe2=0; 
+                   usePipeInput2=1;
+                }else{
+                    usePipeInput=1;
+                }
+            }
+            
         }
         
     }
@@ -351,8 +387,14 @@ static void prPipe(Pipe p)
   //printf("Begin pipe%s\n", p->type == Pout ? "" : " Error");
   for ( c = p->head; c != NULL; c = c->next ) {
     //printf("  Cmd #%d: ", ++i);
-    prCmd(c);
+    prCmd(c,c->next);
   }
+  int status;
+  wait(&status);
+    printf("\n###Waited for all childs\n");
+  usePipeInput=0;
+  usePipe2=0;
+  usePipeInput2=0;
   //printf("End pipe\n");
   prPipe(p->next);
 }
@@ -430,10 +472,13 @@ int main(int argc, char *argv[]){
     //handle cd jobs
     //when cwd is changed but files are referenced relatively
     while ( 1 ) {
-        printf("\n%s%% ", host);fflush(stdout);
+        printf("\n%s%% ", host);
+        fflush(stdout);
         p = parse();
         prPipe(p);
         freePipe(p);
+        fflush(stdout);
+        fflush(stderr);
     }
 }
 
