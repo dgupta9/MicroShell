@@ -42,7 +42,7 @@ int pipeinputlist[100];
 int pipeinputlist1[100];
 int pipeCount=0;
 char* envVar[100];
-
+pid_t firstChildPGID;
 int envVarCount=0;
 
 static void strip(char *s)
@@ -246,7 +246,7 @@ static int handleBuiltIn(char *cmd[],int nargs){
     return 0;
 }
 
-static void prCmd(Cmd c,Cmd nextCmd){
+static void prCmd(Cmd c,Cmd nextCmd,int isFirst){
     if(!strcmp(c->args[0],"end"))
         exit(0);
     
@@ -373,7 +373,14 @@ static void prCmd(Cmd c,Cmd nextCmd){
         exit(-1);
     }else if(childPid == 0){
         //child process
-        signal(SIGPIPE, SIG_IGN);
+        if(isFirst)
+            setpgid(0,0);
+        if((firstChildPGID!=-1)&&(!isFirst)){
+            //set pgid
+            setpgid(0,firstChildPGID);
+        }
+        
+        //signal(SIGPIPE, SIG_IGN);
         //handle INPUT Redirection
         if ( c->in == Tin ){
             inputfd = open(c->infile,O_RDONLY);
@@ -475,15 +482,19 @@ static void prCmd(Cmd c,Cmd nextCmd){
         //set the child process id
         childListCount++;
         
+        if(isFirst){
+            firstChildPGID = getpgid(childPid);
+        }
+        
         //parent shell process
          if((c->out==Tpipe)||(c->out==TpipeErr)){
                 close(pipefd[1]);
          }
-        
+        /*
          int pindex = getMyPipeInput(c);
          if(pindex != -1){
              close(pipeinputlist[pindex]);
-         }
+         }*/
         
     }
 }
@@ -547,20 +558,15 @@ static void prPipe(Pipe p)
     //printf("  Cmd #%d: ", ++i);
     if(c->args[0]!=NULL&&c->args[0][0]=='#')
         return;
-    prCmd(c,c->next);
+    prCmd(c,c->next,(c== p->head));
   }
+    firstChildPGID = -1;
   while((childListCount--)>0){
       wait(NULL); //https://www.daniweb.com/programming/software-development/threads/419275/fork-n-process-and-wait-till-all-children-finish-before-parent-resume
   }
   childListCount=0;
   //printf("End pipe\n");
   prPipe(p->next);
-}
-
-void handleSignal(int signalNum){
-    //handle signal
-    puts("\n");
-    exit(0);
 }
 
 void readnrunrc(){
@@ -619,10 +625,16 @@ int main(int argc, char *argv[]){
     if(gethostname(host,hostnamesize))
         strcpy(host,"armadillo");
     
-    //handle ctrl + c
-    if (signal(SIGINT, handleSignal) == SIG_ERR)
-        printf("shell can't catch SIGINT signal");
     
+    //handle ctrl + c
+    signal(SIGINT,SIG_IGN);
+    signal(SIGTERM ,SIG_IGN);
+    signal(SIGQUIT ,SIG_IGN);
+    signal(SIGTSTP ,SIG_IGN);
+    //if (signal(SIGINT, handleSignal) == SIG_ERR)
+     //   printf("shell can't catch SIGINT signal");
+     //if (signal(SIGPIPE, handleSignal) == SIG_ERR)
+     //   printf("shell can't catch SIGINT signal");
     // run ushrc
     readnrunrc();
     
