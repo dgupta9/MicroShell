@@ -81,6 +81,12 @@ static int getMyPipeInput(Cmd c){
     return -1;    
 }
 
+static int isBuiltIn(char *cmd){
+    if((!strcmp(cmd,"cd"))||(!strcmp(cmd,"echo")))
+        return 1;
+    return 0;
+}
+
 static int handleBuiltIn(char *cmd[],int nargs){
     //do some input cleaning due to '\' in command line
     int j;
@@ -99,10 +105,16 @@ static int handleBuiltIn(char *cmd[],int nargs){
          return 1;  
     }else if(!strcmp(cmd[0],"echo")){
         int i=1;
-        while(cmd[i][0]=='-')   i++; // removing all options in echo
-        
-        
-        
+        while((i<nargs)&&(cmd[i][0]=='-'))   i++; // removing all options in echo
+        while(i<nargs){
+            if(i<nargs-1)
+                printf("%s ",cmd[i]);
+            else
+                printf("%s",cmd[i]);
+            i++;
+        }
+        printf("\n");
+        return 1;
     }
     return 0;
 }
@@ -116,16 +128,108 @@ static void prCmd(Cmd c,Cmd nextCmd){
     
     
     if(nextCmd==NULL){
-        if(handleBuiltIn(c->args,c->nargs)){
-            // close the if any previous commands output pipe
-            int pindex = getMyPipeInput(c);
-            if(pindex != -1){
-                close(pipeinputlist1[pindex]);
-                int devNull = open("/dev/null", O_WRONLY);
-                //close(pipeinputlist[pindex]);
-                dup2(pipeinputlist[pindex],devNull);
-                //close(devNull);
-            }
+        //check if built in
+            if(isBuiltIn(c->args[0])){
+                //make redirection switches
+                if ( c->in == Tin ){
+                    inputfd = open(c->infile,O_RDONLY);
+                    if(inputfd<=0){
+                        perror("INPUT FILE ERROR");
+                        exit(-1);
+                    }
+                    savedstdin = dup(0);
+                    dup2(inputfd,0);
+                }
+                
+                if ( c->out != Tnil )
+                    switch ( c->out ) {
+                        case Tout:
+                            //redirect output to file
+                            outputfd = open(c->outfile,O_WRONLY|O_CREAT|O_TRUNC,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+                            if(outputfd<=0){
+                                perror("OUTPUT IN FILE");
+                            }
+                            savedstdout = dup(1);
+                            dup2(outputfd,1);
+                            break;
+                        case Tapp:
+                            outputfd = open(c->outfile,O_WRONLY|O_CREAT|O_APPEND,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+                            if(outputfd<=0){
+                                perror("OUTPUT IN FILE");
+                            }
+                            savedstdout = dup(1);
+                            dup2(outputfd,1);
+                            break;
+                        case ToutErr:
+                            outputfd = open(c->outfile,O_WRONLY|O_CREAT|O_TRUNC,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+                            if(outputfd<=0){
+                                perror("OUTPUT IN FILE");
+                            }
+                            savedstdout = dup(1);
+                            savedstderr = dup(2);
+                            dup2(outputfd,1);
+                            dup2(outputfd,2);
+                            break;
+                        case TappErr:
+                             outputfd = open(c->outfile,O_WRONLY|O_CREAT|O_APPEND,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+                            if(outputfd<=0){
+                                perror("OUTPUT IN FILE");
+                            }
+                            savedstdout = dup(1);
+                            savedstderr = dup(2);
+                            dup2(outputfd,1);
+                            dup2(outputfd,2);
+                            break;
+                        default:
+                            fprintf(stderr, "Shouldn't get here\n");
+                            exit(-1);
+                    }
+            
+                handleBuiltIn(c->args,c->nargs);
+                // close the if any previous commands output pipe
+                int pindex = getMyPipeInput(c);
+                if(pindex != -1){
+                    close(pipeinputlist1[pindex]);
+                    int devNull = open("/dev/null", O_WRONLY);
+                    //close(pipeinputlist[pindex]);
+                    dup2(pipeinputlist[pindex],devNull);
+                    //close(devNull);
+                }
+                
+                //revert back the changes to stdin, stderr and stdout
+                if ( c->in == Tin ){
+                    close(inputfd);
+                    dup2(savedstdin,0);
+                }
+                
+                if ( c->out != Tnil )
+                    switch ( c->out ) {
+                        case Tout:
+                        case Tapp:
+                            //redirect output to file
+                            dup2(savedstdout,1);
+                            close(outputfd);
+                            close(savedstdout);
+                            break;
+                        case ToutErr:
+                        case TappErr:
+                            dup2(savedstdout,1);
+                            dup2(savedstderr,2);
+                            close(outputfd);
+                            close(savedstdout);
+                            close(savedstderr);
+                            break;
+                        case Tpipe:
+                           printf("| ");
+                           break;
+                        case TpipeErr:
+                            printf("|& ");
+                            break;
+                        default:
+                            fprintf(stderr, "Shouldn't get here\n");
+                            exit(-1);
+                    }
+                
             return;
         }
     }
@@ -233,7 +337,7 @@ static void prCmd(Cmd c,Cmd nextCmd){
             for(j=1;j<nargs;j++){;
                          strip(c->args[j]);
             }
-        
+            
             if(execvp(c->args[0],c->args)==-1){
                 printf("Error in running command\n");
                 exit(-1);
