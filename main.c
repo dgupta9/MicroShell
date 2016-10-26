@@ -28,7 +28,7 @@
 
 char *cwd;
 
-childListCount=0;
+int childListCount=0;
 
 Cmd cmdList[100];
 int pipeinputlist[100];
@@ -81,18 +81,27 @@ static int getMyPipeInput(Cmd c){
     return -1;    
 }
 
-static int handleBuiltIn(char *cmd[]){
+static int handleBuiltIn(char *cmd[],int nargs){
+    //do some input cleaning due to '\' in command line
+    int j;
+    for(j=1;j<nargs;j++){;
+                 strip(cmd[j]);
+    }
+    
     if(!strcmp(cmd[0],"cd")){
         //handle cd command
         int i=1;
-        while(cmd[i][0]=='-')   i++; // removing all options in cd
-        
+        while((i<nargs)&&(cmd[i][0]=='-'))   i++; // removing all options in cd
         if(chdir(cmd[i])){
             perror("Error in chdir");
             exit(-1);
         }
          return 1;  
-    }else if(!strcmp(cmd[0],"cd")){
+    }else if(!strcmp(cmd[0],"echo")){
+        int i=1;
+        while(cmd[i][0]=='-')   i++; // removing all options in echo
+        
+        
         
     }
     return 0;
@@ -104,6 +113,22 @@ static void prCmd(Cmd c,Cmd nextCmd){
     
     int outputfd,inputfd,savedstdout,savedstdin,savedstderr;
     int pipefd[2];
+    
+    
+    if(nextCmd==NULL){
+        if(handleBuiltIn(c->args,c->nargs)){
+            // close the if any previous commands output pipe
+            int pindex = getMyPipeInput(c);
+            if(pindex != -1){
+                close(pipeinputlist1[pindex]);
+                int devNull = open("/dev/null", O_WRONLY);
+                //close(pipeinputlist[pindex]);
+                dup2(pipeinputlist[pindex],devNull);
+                //close(devNull);
+            }
+            return;
+        }
+    }
     
     if((c->out==Tpipe)||(c->out==TpipeErr)){
         pipe(pipefd);
@@ -117,7 +142,7 @@ static void prCmd(Cmd c,Cmd nextCmd){
         exit(-1);
     }else if(childPid == 0){
         //child process
-        
+        signal(SIGPIPE, SIG_IGN);
         //handle INPUT Redirection
         if ( c->in == Tin ){
             inputfd = open(c->infile,O_RDONLY);
@@ -196,6 +221,12 @@ static void prCmd(Cmd c,Cmd nextCmd){
             }
         //printf("Running command %s\n",c->args[0]);
         
+            
+            
+            //check for builtin commands
+            if(handleBuiltIn(c->args,c->nargs))
+                return ;
+            
             //do some input cleaning due to '\' in command line
             int nargs = c->nargs;
             int j;
@@ -204,7 +235,7 @@ static void prCmd(Cmd c,Cmd nextCmd){
             }
         
             if(execvp(c->args[0],c->args)==-1){
-                printf("Error in running command");
+                printf("Error in running command\n");
                 exit(-1);
             }
         
@@ -368,7 +399,7 @@ int main(int argc, char *argv[]){
     //handle cd jobs
     //when cwd is changed but files are referenced relatively
     while ( 1 ) {
-        printf("\n%s%% ", host);
+        printf("%s%% ", host);
         fflush(stdout);
         p = parse();
         prPipe(p);
