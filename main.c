@@ -28,11 +28,58 @@
 
 char *cwd;
 
-int pipefd[2];
-int pipefd2[2];
-int usePipeInput=0;
-int usePipe2=0;
-int usePipeInput2=0;
+childListCount=0;
+
+Cmd cmdList[100];
+int pipeinputlist[100];
+int pipeinputlist1[100];
+int pipeCount=0;
+
+static void strip(char *s)
+{ //copied finnw from http://stackoverflow.com/questions/1515195/how-to-remove-n-or-t-from-a-given-string-in-c
+    char *p = s;
+    int n;
+    while (*s)
+    {
+        n = strcspn(s, "\n");
+        strncpy(p, s, n);
+        p += n;
+        s += n + strspn(s+n, "\n");
+    }
+    *p = 0;
+}
+
+char *trimwhitespace(char *str)
+{
+    // copied from http://stackoverflow.com/questions/122616/how-do-i-trim-leading-trailing-whitespace-in-a-standard-way
+  char *end;
+
+  // Trim leading space
+  while(isspace((unsigned char)*str)) str++;
+
+  if(*str == 0)  // All spaces?
+    return str;
+
+  // Trim trailing space
+  end = str + strlen(str) - 1;
+  while(end > str && isspace((unsigned char)*end)) end--;
+
+  // Write new null terminator
+  *(end+1) = 0;
+
+  return str;
+}
+
+
+static int getMyPipeInput(Cmd c){
+    int i;
+    for(i=0;i<pipeCount;i++){
+        if(cmdList[i]==c){
+            return i;
+        }
+    }
+    return -1;    
+}
 
 static int handleBuiltIn(char *cmd[]){
     if(!strcmp(cmd[0],"cd")){
@@ -56,13 +103,13 @@ static void prCmd(Cmd c,Cmd nextCmd){
         exit(0);
     
     int outputfd,inputfd,savedstdout,savedstdin,savedstderr;
+    int pipefd[2];
     
     if((c->out==Tpipe)||(c->out==TpipeErr)){
-        if(!usePipe2){
-            pipe(pipefd);
-        }else{
-            pipe(pipefd2);
-        }
+        pipe(pipefd);
+        cmdList[pipeCount]=nextCmd;
+        pipeinputlist[pipeCount]=pipefd[0];
+        pipeinputlist1[pipeCount++]=pipefd[1];
     }
     pid_t childPid = fork();
     if(childPid<0){
@@ -82,24 +129,21 @@ static void prCmd(Cmd c,Cmd nextCmd){
             dup2(inputfd,0);
         }
         
-        if(usePipeInput){
-            close(pipefd[1]);
-            dup2(pipefd[0],0);
-            usePipeInput=0;
+        //handle pipe input
+        int pindex = getMyPipeInput(c);
+        if(pindex != -1){
+            close(pipeinputlist1[pindex]);
+            close(0);
+            dup2(pipeinputlist[pindex],0);
         }
-        if(usePipeInput2){
-                close(pipefd2[1]);
-                dup2(pipefd2[0],0);
-                usePipeInput2=0;
-         }
-         
+        
         
         // handle OUTPUT Redirection
         if ( c->out != Tnil )
             switch ( c->out ) {
                 case Tout:
                     //redirect output to file
-                    outputfd = open(c->outfile,O_WRONLY|O_CREAT,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+                    outputfd = open(c->outfile,O_WRONLY|O_CREAT|O_TRUNC,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
                     if(outputfd<=0){
                         perror("OUTPUT IN FILE");
                     }
@@ -115,7 +159,7 @@ static void prCmd(Cmd c,Cmd nextCmd){
                     dup2(outputfd,1);
                     break;
                 case ToutErr:
-                    outputfd = open(c->outfile,O_WRONLY|O_CREAT,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+                    outputfd = open(c->outfile,O_WRONLY|O_CREAT|O_TRUNC,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
                     if(outputfd<=0){
                         perror("OUTPUT IN FILE");
                     }
@@ -135,28 +179,28 @@ static void prCmd(Cmd c,Cmd nextCmd){
                     dup2(outputfd,2);
                     break;
                 case Tpipe:
-                    if(!usePipe2){
-                        close(pipefd[0]);
-                        dup2(pipefd[1],1);
-                    }else{
-                        close(pipefd2[0]);
-                        dup2(pipefd2[1],1);
-                    }
+                    close(pipefd[0]);
+                    close(1);
+                    dup2(pipefd[1],1);
                     break;
                 case TpipeErr:
-                    if(!usePipe2){
-                        close(pipefd[0]);
-                        dup2(pipefd[1],1);
-                        dup2(pipefd[1],2);
-                    }else{
-                        close(pipefd2[0]);
-                        dup2(pipefd2[1],1);
-                        dup2(pipefd2[1],2);
-                    }
+                    close(pipefd[0]);
+                    close(1);
+                    close(2);
+                    dup2(pipefd[1],1);
+                    dup2(pipefd[1],2);
                     break;
                 default:
                     fprintf(stderr, "Shouldn't get here\n");
                     exit(-1);
+            }
+        //printf("Running command %s\n",c->args[0]);
+        
+            //do some input cleaning due to '\' in command line
+            int nargs = c->nargs;
+            int j;
+            for(j=1;j<nargs;j++){;
+                         strip(c->args[j]);
             }
         
             if(execvp(c->args[0],c->args)==-1){
@@ -164,172 +208,24 @@ static void prCmd(Cmd c,Cmd nextCmd){
                 exit(-1);
             }
         
-    }else{
-        //parent shell process
-        if((c->out==Tpipe)||(c->out==TpipeErr)){
-            if((nextCmd!= NULL)&&((nextCmd->out==Tpipe)||(nextCmd->out==TpipeErr))){
-               usePipe2=1; 
-               usePipeInput=1;
-            }else{
-                if(usePipe2){
-                   usePipe2=0; 
-                   usePipeInput2=1;
-                }else{
-                    usePipeInput=1;
-                }
-            }
-            
-        }
-        
-    }
-}
-/*
-static void prCmd_wasted(Cmd c){
-    if(!strcmp(c->args[0],"end"))
         exit(0);
-    int outputfd,inputfd,savedstdout,savedstdin,savedstderr;
-    if ( c->in == Tin ){
-        inputfd = open(c->infile,O_RDONLY);
-        if(inputfd<=0){
-            perror("INPUT FILE ERROR");
-            exit(-1);
-        }
-        savedstdin = dup(0);
-        dup2(inputfd,0);
-    }
-    if ( c->out != Tnil )
-    switch ( c->out ) {
-        case Tout:
-            //redirect output to file
-            outputfd = open(c->outfile,O_WRONLY|O_CREAT,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
-            if(outputfd<=0){
-                perror("OUTPUT IN FILE");
-            }
-            savedstdout = dup(1);
-            dup2(outputfd,1);
-            break;
-        case Tapp:
-            outputfd = open(c->outfile,O_WRONLY|O_CREAT|O_APPEND,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
-            if(outputfd<=0){
-                perror("OUTPUT IN FILE");
-            }
-            savedstdout = dup(1);
-            dup2(outputfd,1);
-            break;
-        case ToutErr:
-            outputfd = open(c->outfile,O_WRONLY|O_CREAT,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
-            if(outputfd<=0){
-                perror("OUTPUT IN FILE");
-            }
-            savedstdout = dup(1);
-            savedstderr = dup(2);
-            dup2(outputfd,1);
-            dup2(outputfd,2);
-            break;
-        case TappErr:
-             outputfd = open(c->outfile,O_WRONLY|O_CREAT|O_APPEND,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
-            if(outputfd<=0){
-                perror("OUTPUT IN FILE");
-            }
-            savedstdout = dup(1);
-            savedstderr = dup(2);
-            dup2(outputfd,1);
-            dup2(outputfd,2);
-            break;
-        default:
-            fprintf(stderr, "Shouldn't get here\n");
-            exit(-1);
-    }
-    if(c->exec != Tamp){
-        int status;
-        //foreground process
+    }else{
+        //set the child process id
+        childListCount++;
         
-        //check for builtin commands
-        if(handleBuiltIn(c->args))
-            return ;
+        //parent shell process
+         if((c->out==Tpipe)||(c->out==TpipeErr)){
+                close(pipefd[1]);
+         }
         
+         int pindex = getMyPipeInput(c);
+         if(pindex != -1){
+             close(pipeinputlist[pindex]);
+         }
         
-        pid_t childPid = fork();
-        if(childPid<0){
-            perror("Shell error in fork");
-            exit(-1);
-        }else if(childPid == 0){
-            //child process
-            
-            //handle pipes before execvp
-            if((c->out==Tpipe)||(c->out==TpipeErr)){
-                int pipe_fd[2]; // pipe b/w 2 commands
-                if(pipe(pipe_fd)<0){
-                    perror("Error in Pipe");
-                    exit(-1);
-                }
-                // close input side of pipe
-                close(pipe_fd[0]);
-                dup2(pipe_fd[1],1);
-                if(c->out==TpipeErr)
-                    dup2(pipe_fd[1],2);
-                if(tempInputPipefd != -1){
-                    // previous command has some created pipe
-                }
-            }
-            
-            if(execvp(c->args[0],c->args)==-1){
-                printf("Error in running command");
-                exit(-1);
-            }
-        }else{
-            //parent process
-            
-            // revert back the descriptor for parent class
-            // first parent will always be shell
-            
-            if ( c->in == Tin ){
-                dup2(savedstdin,0);
-                close(inputfd);
-                close(savedstdin);
-                savedstdin = dup(0);
-                dup2(inputfd,0);
-            }
-            
-             if((c->out==Tpipe)||(c->out==TpipeErr)){
-                // close input side of pipe
-                close(pipe_fd[0]);
-                dup2(pipe_fd[1],1);
-                if(c->out==TpipeErr) 
-                    dup2(pipe_fd[1],2);
-            }
-            
-            if ( c->out != Tnil )
-            switch ( c->out ) {
-                case Tout:
-                case Tapp:
-                    //redirect output to file
-                    dup2(savedstdout,1);
-                    close(outputfd);
-                    close(savedstdout);
-                    break;
-                case ToutErr:
-                case TappErr:
-                    dup2(savedstdout,1);
-                    dup2(savedstderr,2);
-                    close(outputfd);
-                    close(savedstdout);
-                    close(savedstderr);
-                    break;
-                case Tpipe:
-                   printf("| ");
-                   break;
-                case TpipeErr:
-                    printf("|& ");
-                    break;
-                default:
-                    fprintf(stderr, "Shouldn't get here\n");
-                    exit(-1);
-            }
-        }
     }
 }
-*/
+
 static void prCmd_2(Cmd c)
 {
   int i;
@@ -387,14 +283,14 @@ static void prPipe(Pipe p)
   //printf("Begin pipe%s\n", p->type == Pout ? "" : " Error");
   for ( c = p->head; c != NULL; c = c->next ) {
     //printf("  Cmd #%d: ", ++i);
+    if(c->args[0]!=NULL&&c->args[0][0]=='#')
+        return;
     prCmd(c,c->next);
   }
-  int status;
-  wait(&status);
-    printf("\n###Waited for all childs\n");
-  usePipeInput=0;
-  usePipe2=0;
-  usePipeInput2=0;
+  while((childListCount--)>0){
+      wait(NULL); //https://www.daniweb.com/programming/software-development/threads/419275/fork-n-process-and-wait-till-all-children-finish-before-parent-resume
+  }
+  childListCount=0;
   //printf("End pipe\n");
   prPipe(p->next);
 }
@@ -420,7 +316,7 @@ void readnrunrc(){
     close(0);
     if(dup2(rcfd,0)<0){
         perror("error while redirecting stdin to file");
-        error(-1);
+        exit(-1);
     }
     
     Pipe p;
@@ -477,8 +373,6 @@ int main(int argc, char *argv[]){
         p = parse();
         prPipe(p);
         freePipe(p);
-        fflush(stdout);
-        fflush(stderr);
     }
 }
 
