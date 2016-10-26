@@ -22,9 +22,16 @@
 #include <limits.h>
 #include <signal.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/resource.h>
+#include <errno.h>
 
 #define READBUFFSIZE 8192
 #define USHRC "/.ushrc"
+
+
+extern char **environ; // for environment variable http://stackoverflow.com/questions/3473692/list-environment-variables-with-c-in-unix
+
 
 char *cwd;
 
@@ -34,6 +41,9 @@ Cmd cmdList[100];
 int pipeinputlist[100];
 int pipeinputlist1[100];
 int pipeCount=0;
+char* envVar[100];
+
+int envVarCount=0;
 
 static void strip(char *s)
 { //copied finnw from http://stackoverflow.com/questions/1515195/how-to-remove-n-or-t-from-a-given-string-in-c
@@ -82,7 +92,7 @@ static int getMyPipeInput(Cmd c){
 }
 
 static int isBuiltIn(char *cmd){
-    if((!strcmp(cmd,"cd"))||(!strcmp(cmd,"echo")))
+    if((!strcmp(cmd,"cd"))||(!strcmp(cmd,"echo"))||(!strcmp(cmd,"logout"))||(!strcmp(cmd,"pwd"))||(!strcmp(cmd,"where"))||(!strcmp(cmd,"nice"))||(!strcmp(cmd,"unsetenv"))||(!strcmp(cmd,"setenv")))
         return 1;
     return 0;
 }
@@ -114,6 +124,123 @@ static int handleBuiltIn(char *cmd[],int nargs){
             i++;
         }
         printf("\n");
+        return 1;
+    }else  if(!strcmp(cmd[0],"logout")){
+        exit(0);
+    }else  if(!strcmp(cmd[0],"pwd")){
+        char filePath[PATH_MAX];
+        getcwd(filePath,PATH_MAX); // from http://www.qnx.com/developers/docs/660/index.jsp?topic=%2Fcom.qnx.doc.neutrino.lib_ref%2Ftopic%2Fg%2Fgetcwd.html
+        printf("%s\n",filePath);
+    }else  if(!strcmp(cmd[0],"where")){
+        // check if built in
+        if(nargs<2||isBuiltIn(cmd[1])){
+            return 1;
+        }
+        char* pathList = getenv("PATH");
+        char* path = strtok(pathList,":");
+        while(path != NULL){
+            // check in each path
+            
+            DIR *d;
+            struct dirent *dir;
+            d = opendir(path);
+            while ((dir = readdir(d)) != NULL)
+            {
+                if(!strcmp(dir->d_name, cmd[1])){
+                    char fullPath[PATH_MAX];
+                    strcpy(fullPath,path);
+                    strcat(fullPath,"/");
+                    strcat(fullPath,cmd[1]);
+                    printf("%s\n", fullPath);
+                    return 1;
+                }
+            }
+            path = strtok(NULL,":");
+        }
+    }else  if(!strcmp(cmd[0],"setenv")){
+       
+        if(nargs == 1){
+            //print the environment variables
+            char **env ;
+            for (env = environ; *env; ++env)
+                printf("%s\n", *env);
+        }else if(nargs == 2){
+            //set the environment variable to null string
+            setenv(cmd[1], "",1);
+        }else{
+            //set the environment variable to strings
+             char str[1000];
+            strcpy(str,"");
+            int i=2;
+            while(i<nargs){
+                strcat(str,cmd[i]);
+                strcat(str," ");
+                i++;
+            }
+            setenv(cmd[1],str,1);
+            
+        }
+    }else  if(!strcmp(cmd[0],"unsetenv")){
+        unsetenv(cmd[1]);
+    }else  if(!strcmp(cmd[0],"nice")){
+        if(nargs == 1){
+            // nice the shell in 4
+            setpriority(PRIO_PROCESS,0,4);
+        }else if(nargs == 2){
+            char *endptr;
+            errno = 0;
+            int num = strtoul(cmd[1],&endptr,10);
+            if ((errno == ERANGE && (num == LONG_MAX || num == LONG_MIN))
+                   || (errno != 0 && num == 0)) {
+               perror("error in nice command");
+               exit(EXIT_FAILURE);
+           }
+
+           if (endptr == cmd[1]) {
+               //argument is command only
+                pid_t cid = fork();
+                if(cid<0){
+                    perror("ERROR in child");
+                    exit(-1);
+                }else if(cid==0){
+                     // nice the command in 4
+                    setpriority(PRIO_PROCESS,0,4);
+                    char *temp[2];
+                    temp[0] = cmd[2];
+                    temp[1] = NULL;
+                    if(execvp(cmd[2],temp)==-1){
+                        printf("Error in running command\n");
+                        exit(-1);
+                    }
+                    exit(0);   
+                }
+            }else{
+                // shell priority change as num
+                setpriority(PRIO_PROCESS,0,num);
+            }
+        }else if(nargs == 3){
+              char *endptr;
+              errno = 0;
+              int num = strtoul(cmd[1],&endptr,10);
+              pid_t cid = fork();
+                if(cid<0){
+                    perror("ERROR in nice command fork");
+                    exit(-1);
+                }else if(cid==0){
+                     // nice the command in 4
+                    setpriority(PRIO_PROCESS,0,num);
+                    char *temp[2];
+                    temp[0] = cmd[2];
+                    temp[1] = NULL;
+                    if(execvp(cmd[2],temp)==-1){
+                        printf("Error in running command\n");
+                        exit(-1);
+                    }
+                    exit(0);   
+                }else{
+                    wait(NULL);
+                }
+        }
         return 1;
     }
     return 0;
@@ -316,8 +443,8 @@ static void prCmd(Cmd c,Cmd nextCmd){
                     close(pipefd[0]);
                     close(1);
                     close(2);
+                    dup2(2,1);
                     dup2(pipefd[1],1);
-                    dup2(pipefd[1],2);
                     break;
                 default:
                     fprintf(stderr, "Shouldn't get here\n");
@@ -497,7 +624,7 @@ int main(int argc, char *argv[]){
         printf("shell can't catch SIGINT signal");
     
     // run ushrc
-    //readnrunrc();
+    readnrunrc();
     
     
     //handle cd jobs
