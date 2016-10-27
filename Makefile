@@ -6,7 +6,7 @@
 #
 
 CC_C= gcc
-CFLAGS = -g #-Wall -g -Werror
+CFLAGS = -g#-Wall -g -Werror
 
 TARGETS= ush
 DEPS = parse.h
