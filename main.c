@@ -32,6 +32,18 @@
 
 extern char **environ; // for environment variable http://stackoverflow.com/questions/3473692/list-environment-variables-with-c-in-unix
 
+struct Process{
+    pid_t    pid;
+    char     cmd[100];
+    char     time[100];
+    int        isBG;
+    int        isCompleted;
+};
+
+struct Process ptable[1000];
+int ptablecount=0;
+
+int bgtasks=1;
 
 char *cwd;
 
@@ -92,7 +104,7 @@ static int getMyPipeInput(Cmd c){
 }
 
 static int isBuiltIn(char *cmd){
-    if((!strcmp(cmd,"cd"))||(!strcmp(cmd,"echo"))||(!strcmp(cmd,"logout"))||(!strcmp(cmd,"pwd"))||(!strcmp(cmd,"where"))||(!strcmp(cmd,"nice"))||(!strcmp(cmd,"unsetenv"))||(!strcmp(cmd,"setenv")))
+    if((!strcmp(cmd,"cd"))||(!strcmp(cmd,"echo"))||(!strcmp(cmd,"logout"))||(!strcmp(cmd,"pwd"))||(!strcmp(cmd,"where"))||(!strcmp(cmd,"nice"))||(!strcmp(cmd,"unsetenv"))||(!strcmp(cmd,"setenv"))||(!strcmp(cmd,"jobs"))||(!strcmp(cmd,"kill"))||(!strcmp(cmd,"fg")))
         return 1;
     return 0;
 }
@@ -127,11 +139,35 @@ static int handleBuiltIn(char *cmd[],int nargs){
         return 1;
     }else  if(!strcmp(cmd[0],"logout")){
         exit(0);
+    }else  if(!strcmp(cmd[0],"kill")){
+		char *endptr;
+		errno = 0;
+		int num = strtoul(cmd[1],&endptr,10);
+		if ((errno == ERANGE && (num == LONG_MAX || num == LONG_MIN))
+			   || (errno != 0 && num == 0)) {
+		   perror("error in nice command");
+		   exit(EXIT_FAILURE);
+	   }
+		
+		printf("\n$$ro kill%d",num);
+        kill(num, SIGKILL);
     }else  if(!strcmp(cmd[0],"pwd")){
         char filePath[PATH_MAX];
         getcwd(filePath,PATH_MAX); // from http://www.qnx.com/developers/docs/660/index.jsp?topic=%2Fcom.qnx.doc.neutrino.lib_ref%2Ftopic%2Fg%2Fgetcwd.html
         printf("%s\n",filePath);
-    }else  if(!strcmp(cmd[0],"where")){
+    }else  if(!strcmp(cmd[0],"fd")){
+		char *endptr;
+		errno = 0;
+		int num = strtoul(cmd[1],&endptr,10);
+		if ((errno == ERANGE && (num == LONG_MAX || num == LONG_MIN))
+			   || (errno != 0 && num == 0)) {
+		   perror("error in nice command");
+		   exit(EXIT_FAILURE);
+	   }
+		
+		pid_t stdin_PGID; // copied from https://support.sas.com/documentation/onlinedoc/ccompiler/doc/lr2/tsetpgp.htm 
+		 stdin_PGID = tcsetpgrp(STDIN_FILENO,num);
+	}else  if(!strcmp(cmd[0],"where")){
         // check if built in
         if(nargs<2||isBuiltIn(cmd[1])){
             return 1;
@@ -180,6 +216,27 @@ static int handleBuiltIn(char *cmd[],int nargs){
             setenv(cmd[1],str,1);
             
         }
+    }else if(!strcmp(cmd[0],"jobs")){
+        int i=0;
+        printf("\nPID\tCMD");
+        for(i=0;i<ptablecount;i++){
+			//check for job completed
+			if(ptable[i].isCompleted)
+			   continue;
+			
+			//check process exists
+			struct stat buf;
+			char file[1000];
+			sprintf(file,"/proc/%d/stat",ptable[i].pid);
+    		if(stat(file, &buf) != 0){
+				ptable[i].isCompleted = 1;
+				continue;
+			}
+			
+            printf("\n%d\t%s",ptable[i].pid,ptable[i].cmd);
+        }
+        printf("\n");
+        return 1;
     }else  if(!strcmp(cmd[0],"unsetenv")){
         unsetenv(cmd[1]);
     }else  if(!strcmp(cmd[0],"nice")){
@@ -206,13 +263,19 @@ static int handleBuiltIn(char *cmd[],int nargs){
                      // nice the command in 4
                     setpriority(PRIO_PROCESS,0,4);
                     char *temp[2];
-                    temp[0] = cmd[2];
+                    temp[0] = cmd[1];
                     temp[1] = NULL;
-                    if(execvp(cmd[2],temp)==-1){
+                    if(execvp(cmd[1],temp)==-1){
                         printf("Error in running command\n");
                         exit(-1);
                     }
                     exit(0);   
+                }else{
+                    ptable[ptablecount].pid = cid;
+                    strcpy(ptable[ptablecount].cmd,cmd[1]);
+                    ptable[ptablecount].isBG = 0;
+                    ptable[ptablecount++].isCompleted = 0;
+                    wait(NULL);
                 }
             }else{
                 // shell priority change as num
@@ -238,6 +301,10 @@ static int handleBuiltIn(char *cmd[],int nargs){
                     }
                     exit(0);   
                 }else{
+                    ptable[ptablecount].pid = cid;
+                    strcpy(ptable[ptablecount].cmd,cmd[2]);
+                    ptable[ptablecount].isBG = 0;
+                    ptable[ptablecount++].isCompleted = 0;
                     wait(NULL);
                 }
         }
@@ -373,12 +440,17 @@ static void prCmd(Cmd c,Cmd nextCmd,int isFirst){
         exit(-1);
     }else if(childPid == 0){
         //child process
-        if(isFirst)
-            setpgid(0,0);
+        
+      
         if((firstChildPGID!=-1)&&(!isFirst)){
             //set pgid
-            setpgid(0,firstChildPGID);
+        //    setpgid(0,firstChildPGID);
         }
+		if(c->exec == Tamp){
+             setpgid(0,0);   //background process
+             setsid();
+         }
+
         
         //signal(SIGPIPE, SIG_IGN);
         //handle INPUT Redirection
@@ -482,8 +554,19 @@ static void prCmd(Cmd c,Cmd nextCmd,int isFirst){
         //set the child process id
         childListCount++;
         
+        //add entry into process table
+        ptable[ptablecount].pid = childPid;
+        strcpy(ptable[ptablecount].cmd,c->args[0]);
+        ptable[ptablecount].isBG = (c->exec == Tamp ? 1:0);
+        ptable[ptablecount++].isCompleted = 0;
+        
+		if(c->exec == Tamp){
+			printf("[%d] %d\n",bgtasks,childPid);
+			bgtasks = bgtasks + 1;
+         }
+		
         if(isFirst){
-            firstChildPGID = getpgid(childPid);
+          //  firstChildPGID = getpgid(childPid);
         }
         
         //parent shell process
@@ -554,16 +637,20 @@ static void prPipe(Pipe p)
     return;
 
   //printf("Begin pipe%s\n", p->type == Pout ? "" : " Error");
+	int dowait=1;
   for ( c = p->head; c != NULL; c = c->next ) {
     //printf("  Cmd #%d: ", ++i);
     if(c->args[0]!=NULL&&c->args[0][0]=='#')
         return;
+	  if(c->exec == Tamp)
+		  dowait=0;
     prCmd(c,c->next,(c== p->head));
   }
     firstChildPGID = -1;
-  while((childListCount--)>0){
-      wait(NULL); //https://www.daniweb.com/programming/software-development/threads/419275/fork-n-process-and-wait-till-all-children-finish-before-parent-resume
-  }
+	if(dowait)
+		  while((childListCount--)>0){
+			  wait(NULL); //https://www.daniweb.com/programming/software-development/threads/419275/fork-n-process-and-wait-till-all-children-finish-before-parent-resume
+		  }
   childListCount=0;
   //printf("End pipe\n");
   prPipe(p->next);
